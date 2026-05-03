@@ -27,27 +27,40 @@ function decodeResponse(buffer, contentType = "") {
 }
 
 async function fetchText(url, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
-  try {
-    let response;
+  const attempts = options.attempts ?? 3;
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 45_000);
     try {
-      response = await fetch(url, { ...options, signal: controller.signal });
-    } catch (error) {
-      if (error?.cause?.code !== "UNABLE_TO_VERIFY_LEAF_SIGNATURE" || new URL(url).hostname !== "sps.mohw.gov.tw") {
-        throw error;
+      let response;
+      try {
+        response = await fetch(url, { ...options, signal: controller.signal });
+      } catch (error) {
+        const code = error?.cause?.code;
+        const allowlistedMohw = new URL(url).hostname === "sps.mohw.gov.tw";
+        if (!allowlistedMohw || !["UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UND_ERR_CONNECT_TIMEOUT", "ETIMEDOUT", "ECONNRESET"].includes(code)) {
+          throw error;
+        }
+        return await fetchTextWithAllowlistedTlsFallback(url, options);
       }
-      return await fetchTextWithAllowlistedTlsFallback(url, options);
+      const buffer = await response.arrayBuffer();
+      const text = decodeResponse(buffer, response.headers.get("content-type") ?? "");
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} from ${url}: ${text.slice(0, 300)}`);
+      }
+      return { text, headers: response.headers };
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) {
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, attempt * 2_000));
+    } finally {
+      clearTimeout(timeout);
     }
-    const buffer = await response.arrayBuffer();
-    const text = decodeResponse(buffer, response.headers.get("content-type") ?? "");
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} from ${url}: ${text.slice(0, 300)}`);
-    }
-    return { text, headers: response.headers };
-  } finally {
-    clearTimeout(timeout);
   }
+  throw lastError;
 }
 
 function fetchTextWithAllowlistedTlsFallback(url, options = {}) {
@@ -61,6 +74,7 @@ function fetchTextWithAllowlistedTlsFallback(url, options = {}) {
       path: `${target.pathname}${target.search}`,
       headers: options.headers,
       rejectUnauthorized: false,
+      family: 4,
       timeout: options.timeoutMs ?? 30_000
     }, response => {
       const chunks = [];
