@@ -1,0 +1,13 @@
+{
+  "name": "mhs-1545",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "update": "node scripts/update.mjs",
+    "check": "node --check scripts/update.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
