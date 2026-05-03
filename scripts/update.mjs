@@ -10,6 +10,7 @@ const REQUEST_TIMEOUT_MS = 480_000;
 const MAX_OUTPUT_TOKENS = 50_000;
 
 const referencePath = new URL("../data/taipeupsy.html", import.meta.url);
+const cachePath = new URL("../data/last-mhs.json", import.meta.url);
 const outputPath = new URL("../docs/index.html", import.meta.url);
 
 function decodeResponse(buffer, contentType = "") {
@@ -179,6 +180,19 @@ async function scrapeMhsClinics() {
     sourceUpdatedAt: stripTags(row.editDate),
     teleconsultation: stripTags(row.strTeleconsultation)
   })).filter(clinic => clinic.name && clinic.availableSlots > 0);
+}
+
+async function getClinicsWithCache() {
+  try {
+    const clinics = await scrapeMhsClinics();
+    await writeFile(cachePath, `${JSON.stringify({ updatedAt: new Date().toISOString(), clinics }, null, 2)}\n`, "utf8");
+    return { clinics, dataSource: "live-mohw" };
+  } catch (error) {
+    console.warn(`[warn] live MOHW scrape failed: ${error.message}`);
+    const cached = JSON.parse(await readFile(cachePath, "utf8"));
+    if (!Array.isArray(cached.clinics) || cached.clinics.length === 0) throw error;
+    return { clinics: cached.clinics, dataSource: `cached-mohw-${cached.updatedAt}` };
+  }
 }
 
 async function readReferenceNames() {
@@ -369,7 +383,7 @@ footer a:hover { color: var(--accent); border-color: var(--accent); }
   <div class="logo">🧠</div>
   <h1>台北市心理諮商合作機構尚有名額清單</h1>
   <p class="subtitle">每週一 01:00 自動更新 · 僅保留參考頁有填寫的診所</p>
-  <p class="count">產生時間：${escapeHtml(generatedAt)} · 過濾模型：${escapeHtml(metadata.model)}</p>
+  <p class="count">產生時間：${escapeHtml(generatedAt)} · 過濾模型：${escapeHtml(metadata.model)} · 資料：${escapeHtml(metadata.dataSource)}</p>
   <section class="stats" aria-label="統計">
     <div class="stat"><strong>${escapeHtml(clinics.length)}</strong><span>符合診所</span></div>
     <div class="stat"><strong>${escapeHtml(totalSlots)}</strong><span>四週總名額</span></div>
@@ -387,11 +401,11 @@ footer a:hover { color: var(--accent); border-color: var(--accent); }
 }
 
 async function main() {
-  const [clinics, reference] = await Promise.all([scrapeMhsClinics(), readReferenceNames()]);
+  const [{ clinics, dataSource }, reference] = await Promise.all([getClinicsWithCache(), readReferenceNames()]);
   const filtered = await filterWithZhipu(clinics, reference);
   await mkdir(new URL("../docs/", import.meta.url), { recursive: true });
-  await writeFile(outputPath, renderHtml(filtered.clinics, filtered), "utf8");
-  console.log(JSON.stringify({ scraped: clinics.length, rendered: filtered.clinics.length, model: filtered.model, usedFallback: filtered.usedFallback }, null, 2));
+  await writeFile(outputPath, renderHtml(filtered.clinics, { ...filtered, dataSource }), "utf8");
+  console.log(JSON.stringify({ scraped: clinics.length, rendered: filtered.clinics.length, model: filtered.model, usedFallback: filtered.usedFallback, dataSource }, null, 2));
 }
 
 main().catch(error => {

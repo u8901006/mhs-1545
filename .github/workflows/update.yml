@@ -47,7 +47,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add docs/index.html
+          git add docs/index.html data/last-mhs.json
           if git diff --cached --quiet; then
             echo "No generated page changes"
             exit 0
