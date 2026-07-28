@@ -4,10 +4,13 @@ import https from "node:https";
 const MHS_BASE = "https://sps.mohw.gov.tw/mhs";
 const QUERY_PAGE_URL = `${MHS_BASE}/Home/QueryServiceOrg`;
 const QUERY_JSON_URL = `${MHS_BASE}/Home/QueryServiceOrgJsonList`;
-const ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/coding/paas/v4";
-const ZHIPU_MODELS = ["GLM-5-Turbo", "GLM-4.7", "GLM-4.7-Flash"];
+const NVIDIA_API_BASE = "https://integrate.api.nvidia.com/v1";
+const NVIDIA_MODELS = [
+  "nvidia/nemotron-3-super-120b-a12b",
+  "nvidia/nemotron-3-nano-30b-a3b"
+];
 const REQUEST_TIMEOUT_MS = 480_000;
-const MAX_OUTPUT_TOKENS = 50_000;
+const MAX_OUTPUT_TOKENS = 16_384;
 
 const referencePath = new URL("../data/taipeupsy.html", import.meta.url);
 const cachePath = new URL("../data/last-mhs.json", import.meta.url);
@@ -223,11 +226,11 @@ function extractJson(text) {
     .replace(/```/g, "")
     .trim();
   const start = cleaned.search(/[\[{]/);
-  if (start < 0) throw new Error("No JSON object or array found in GLM response");
+  if (start < 0) throw new Error("No JSON object or array found in NVIDIA response");
   const open = cleaned[start];
   const close = open === "[" ? "]" : "}";
   const end = cleaned.lastIndexOf(close);
-  if (end < start) throw new Error("Incomplete JSON in GLM response");
+  if (end < start) throw new Error("Incomplete JSON in NVIDIA response");
   const candidate = cleaned
     .slice(start, end + 1)
     .replace(/,\s*([}\]])/g, "$1");
@@ -236,7 +239,7 @@ function extractJson(text) {
 
 function validateFilteredClinics(value, sourceClinics) {
   const array = Array.isArray(value) ? value : value?.clinics;
-  if (!Array.isArray(array)) throw new Error("GLM JSON did not return an array");
+  if (!Array.isArray(array)) throw new Error("NVIDIA JSON did not return an array");
   const byName = new Map(sourceClinics.map(clinic => [clinic.name, clinic]));
   return array.map(item => {
     const source = byName.get(stripTags(item.name));
@@ -249,14 +252,14 @@ function validateFilteredClinics(value, sourceClinics) {
   }).filter(Boolean);
 }
 
-async function callZhipu(model, clinics, referenceNames) {
-  const apiKey = process.env.ZHIPU_API_KEY;
-  if (!apiKey) throw new Error("ZHIPU_API_KEY is not set");
+async function callNvidia(model, clinics, referenceNames) {
+  const apiKey = process.env.NVIDIA_API_KEY;
+  if (!apiKey) throw new Error("NVIDIA_API_KEY is not set");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(`${ZHIPU_BASE_URL}/chat/completions`, {
+    const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -266,7 +269,10 @@ async function callZhipu(model, clinics, referenceNames) {
       body: JSON.stringify({
         model,
         max_tokens: MAX_OUTPUT_TOKENS,
-        temperature: 0,
+        temperature: 1.0,
+        top_p: 0.95,
+        stream: false,
+        chat_template_kwargs: { enable_thinking: false },
         messages: [
           {
             role: "system",
@@ -284,7 +290,7 @@ async function callZhipu(model, clinics, referenceNames) {
       })
     });
     const text = await response.text();
-    if (!response.ok) throw new Error(`Zhipu ${model} HTTP ${response.status}: ${text.slice(0, 500)}`);
+    if (!response.ok) throw new Error(`NVIDIA ${model} HTTP ${response.status}: ${text.slice(0, 500)}`);
     const payload = JSON.parse(text);
     return payload.choices?.[0]?.message?.content ?? text;
   } finally {
@@ -292,11 +298,11 @@ async function callZhipu(model, clinics, referenceNames) {
   }
 }
 
-async function filterWithZhipu(clinics, reference) {
+async function filterWithNvidia(clinics, reference) {
   const localFallback = localReferenceFilter(clinics, reference);
-  for (const model of ZHIPU_MODELS) {
+  for (const model of NVIDIA_MODELS) {
     try {
-      const content = await callZhipu(model, clinics, reference.names);
+      const content = await callNvidia(model, clinics, reference.names);
       const parsed = extractJson(content);
       const filtered = validateFilteredClinics(parsed, clinics);
       if (filtered.length > 0) return { clinics: filtered, model, usedFallback: false };
@@ -393,7 +399,7 @@ footer a:hover { color: var(--accent); border-color: var(--accent); }
   <ul>${rows || "<li class=\"notice\">目前沒有符合條件的診所。</li>"}</ul>
   <footer>
     <p><a href="https://www.leepsyclinic.com/">李政洋身心診所首頁</a> · <a href="https://blog.leepsyclinic.com/">訂閱電子報</a> · <a href="https://buymeacoffee.com/CYlee">Buy me a coffee</a></p>
-    <p>Powered by MOHW + Zhipu AI · <a href="https://github.com/u8901006/mhs-1545">GitHub</a></p>
+    <p>Powered by MOHW + NVIDIA Nemotron 3 Super · <a href="https://github.com/u8901006/mhs-1545">GitHub</a></p>
   </footer>
 </main>
 </body>
@@ -402,7 +408,7 @@ footer a:hover { color: var(--accent); border-color: var(--accent); }
 
 async function main() {
   const [{ clinics, dataSource }, reference] = await Promise.all([getClinicsWithCache(), readReferenceNames()]);
-  const filtered = await filterWithZhipu(clinics, reference);
+  const filtered = await filterWithNvidia(clinics, reference);
   await mkdir(new URL("../docs/", import.meta.url), { recursive: true });
   await writeFile(outputPath, renderHtml(filtered.clinics, { ...filtered, dataSource }), "utf8");
   console.log(JSON.stringify({ scraped: clinics.length, rendered: filtered.clinics.length, model: filtered.model, usedFallback: filtered.usedFallback, dataSource }, null, 2));
